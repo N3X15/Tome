@@ -1,7 +1,10 @@
 '''
 This is intended to be compiled with pyinstaller.
 '''
-import os, sys, argparse
+
+TOME_VERSION='0.1.1'
+
+import os, sys, argparse, subprocess
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(script_dir, 'lib', 'buildtools'))
@@ -11,18 +14,25 @@ from buildtools import os_utils
 from buildtools.wrapper import Git
 from buildtools.bt_logging import IndentLogger
 
-arcinstall_dir = os.path.realpath(os.path.expanduser('~/.arcanist'))
+home_dir = os.path.expanduser('~')
+
+arcinstall_dir = os.path.join(home_dir, '.arcanist')
 libphutil_dir = os.path.join(arcinstall_dir, 'libphutil')
 arcanist_dir = os.path.join(arcinstall_dir, 'arcanist')
 arcanist_bin_dir = os.path.join(arcanist_dir, 'bin')
+tome_cfg = os.path.join(arcinstall_dir,'config.json')
 
 libphutil_uri = 'git://github.com/facebook/libphutil.git'
 arcanist_uri = 'git://github.com/facebook/arcanist.git'
 
-winphp_uri = 'http://windows.php.net/downloads/releases/php-5.6.4-Win32-VC11-x86.zip'
-winphp_sha1 = '3c72be4d02990a15e55a648acc9f89540cadeba6'
-winphp_extract = os.path.realpath('C:\\php')
+php_version = '5.6.5'
+winphp_uri = 'http://windows.php.net/downloads/releases/php-5.6.5-Win32-VC11-x86.zip'
+winphp_sha1 = 'cb0d47416d17fffa86f2359ca6366fb7b1f6888e'
+winphp_extract = os.path.join(arcinstall_dir, 'php')
 php_bin = 'php'
+
+DISTRO = None
+ENV_TYPE = None
 
 packagedefs = {
     'ubuntu':{
@@ -44,6 +54,51 @@ def CloneOrPull(id, uri, dir):
     with os_utils.Chdir(dir):            
         log.info('{} is now at commit {}.'.format(id, Git.GetCommit()))
             
+
+class WindowsEnv:
+    """Utility class to get/set windows environment variable"""
+    
+    def __init__(self, scope):
+        from subprocess import check_call
+        log.info('Python version: 0x%0.8X' % sys.hexversion)
+        if sys.hexversion > 0x03000000:
+            import winreg
+        else:
+            import _winreg as winreg
+        self.winreg=winreg
+        
+        assert scope in ('user', 'system')
+        self.scope = scope
+        if scope == 'user':
+            self.root = winreg.HKEY_CURRENT_USER
+            self.subkey = 'Environment'
+        else:
+            self.root = winreg.HKEY_LOCAL_MACHINE
+            self.subkey = r'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+            
+    def get(self, name, default=None):
+        with self.winreg.OpenKey(self.root, self.subkey, 0, self.winreg.KEY_READ) as key:
+            try:
+                value, _ = self.winreg.QueryValueEx(key, name)
+            except WindowsError:
+                value = default
+            return value
+    
+    def set(self, name, value):
+        # Note: for 'system' scope, you must run this as Administrator
+        with self.winreg.OpenKey(self.root, self.subkey, 0, self.winreg.KEY_ALL_ACCESS) as key:
+            self.winreg.SetValueEx(key, name, 0, self.winreg.REG_EXPAND_SZ, value)
+            
+        import win32api, win32con; assert win32api.SendMessage(win32con.HWND_BROADCAST, win32con.WM_SETTINGCHANGE, 0, 'Environment')
+        
+        """
+        # For some strange reason, calling SendMessage from the current process
+        # doesn't propagate environment changes at all.
+        # TODO: handle CalledProcessError (for assert)
+        subprocess.check_call('''\
+"%s" -c "import win32api, win32con; assert win32api.SendMessage(win32con.HWND_BROADCAST, win32con.WM_SETTINGCHANGE, 0, 'Environment')"''' % sys.executable)
+        """
+        
 def CheckInstall():
     packages = []
     path = []
@@ -53,9 +108,9 @@ def CheckInstall():
                 log.error('Git for Windows is missing from PATH.  Please install it.')
                 sys.exit(1)
             else:
-                packages += package_defs['ubuntu']['git']
+                packages += package_defs[DISTRO]['git']
         else:
-            log.info('Git is present.')
+            log.info('Git is present in PATH.')
             
     with log.info('Checking for PHP...'):
         if not os_utils.which('php'):
@@ -63,9 +118,9 @@ def CheckInstall():
                 WindowsInstallPHP()
                 path += [winphp_extract]
             else:
-                packages += package_defs['ubuntu']['php']
+                packages += package_defs[DISTRO]['php']
         else:
-            log.info('PHP is present.')
+            log.info('PHP is present in PATH.')
                 
     if len(packages) > 0:
         os_utils.InstallDpkgPackages(packages)
@@ -77,25 +132,46 @@ def CheckInstall():
         CloneOrPull('libphutil', libphutil_uri, libphutil_dir)
         need_arcanist_path = not os.path.isdir(arcanist_dir)
         CloneOrPull('arcanist', arcanist_uri, arcanist_dir)
-        path += [arcanist_bin_dir]
         
+        if not os_utils.which('php'):
+            path += [arcanist_bin_dir]
+        else:
+            log.info('Arcanist is present in PATH.')
+        
+    if len(path) == 0:
+        return
     if sys.platform == 'win32':
-        log.info('Please add this to your Windows user\'s PATH: ' + (';'.join(path)))
+        with log.info('Connecting to Windows to adjust {} PATH...'.format(ENV_TYPE)):
+            env = WindowsEnv(ENV_TYPE)
+            oldPath = env.get('PATH', '').split(os.pathsep)
+            newPath = path
+            for pathSeg in oldPath:
+                if pathSeg in newPath:
+                    log.warning('Path segment "{}" has a duplicate.  Skipping.'.format(pathSeg))
+                    continue
+                if not os.path.isdir(pathSeg):
+                    log.warning('Path segment "{}" does not exist!  Recommend removal.'.format(pathSeg))
+                    # continue
+                newPath += [pathSeg.strip()]
+                    
+            fixed_pathstr = os.pathsep.join(newPath)
+            log.info('Updating {} %PATH% to: {}'.format(ENV_TYPE, fixed_pathstr))
+            env.set('PATH',fixed_pathstr)
     else:
-        if len(path) > 0:
-            with open(os.path.expanduser('~/.bashrc'), 'a') as f:
-                for pathc in path:
-                    with log.info('Adding {} to PATH (via ~/.bashrc)...'.format(pathc)):
-                        f.write('\nexport PATH="{0}:$PATH"'.format(pathc))
+        with open(os.path.expanduser('~/.bashrc'), 'a') as f:
+            for pathc in path:
+                with log.info('Adding {} to PATH (via ~/.bashrc)...'.format(pathc)):
+                    f.write('\nexport PATH="{0}:$PATH"'.format(pathc))
         
 def WindowsInstallPHP():
     import zipfile, hashlib
-    if not os.path.isfile('php.zip'):
+    phpzip = 'php-{}.zip'.format(php_version)
+    if not os.path.isfile(phpzip):
         with log.info('Downloading PHP...'):
-            http.DownloadFile(winphp_uri, 'php.zip')
+            http.DownloadFile(winphp_uri, phpzip)
     with log.info('Verifying PHP ZIP against known SHA1...'):
         real_sha1 = ''
-        with open('php.zip', 'rb') as f:
+        with open(phpzip, 'rb') as f:
             real_sha1 = hashlib.sha1(f.read()).hexdigest()
         if real_sha1 != winphp_sha1:
             log.error('SHA1 mismatch! {} != {}'.format(real_sha1, winphp_sha1))
@@ -104,7 +180,7 @@ def WindowsInstallPHP():
             log.info('Hashes match.')
     with log.info('Installing PHP...'):
         log.info('Extracting ZIP...')
-        with zipfile.ZipFile('php.zip', "r") as z:
+        with zipfile.ZipFile(phpzip, "r") as z:
             z.extractall(winphp_extract)
         with log.info('Updating php.ini configuration...'):
             phpini = os.path.join(winphp_extract, 'php.ini')
@@ -136,10 +212,12 @@ def WindowsInstallPHP():
     
             
 if __name__ == '__main__':
-    argp = argparse.ArgumentParser()
+    argp = argparse.ArgumentParser(prog='tome', description='Installer for Arcanist.', version=TOME_VERSION)
     command = argp.add_subparsers(help='The command you wish to execute', dest='MODE')
     
-    _install = command.add_parser('install', help='Install or update arcanist.')
+    _install = command.add_parser('install', help='Install or update Arcanist.')
+    _install.add_argument('--arcbase-dir', type=str, default=arcinstall_dir, help='Directory to install Arcanist, PHP, and phutil.')
+    _install.add_argument('--user', action='store_true', default=False, help='Modify Windows user %PATH% (rather than system).')
     
     _setup = command.add_parser('setup-project', help='Set up working directory for phabricator')
     _setup.add_argument('phab_uri', type=str, help='URL of Phabricator')
@@ -148,8 +226,29 @@ if __name__ == '__main__':
     
     args = argp.parse_args()
     
+    if sys.platform == 'linux':
+        DISTRO, _, _ = platform.linux_distribution()
+        DISTRO = DISTRO.lower()
+        log.info('Distro is '+DISTRO)
+        
+    
+    if sys.platform == 'win32':
+        ENV_TYPE='user' 
+        if not args.user:
+            from win32com.shell import shell
+            if not shell.IsUserAnAdmin():
+                log.error('Please run tome as administrator to modify system %PATH%.  If you only wish to modify your user\'s %PATH%, please add --user to the command line.')
+                sys.exit(1)
+            ENV_TYPE='system'
+        
     if args.MODE == 'install':
+        if args.arcbase_dir is not None:
+            arcinstall_dir = os.path.realpath(args.arcbase_dir)
+        log.info('Installing to '+arcinstall_dir)
+        if ENV_TYPE is not None:
+            log.info('Will modify {} environment variables.'.format(ENV_TYPE))
         CheckInstall()
+        
     if args.MODE == 'setup-project':
         import json
         arc_config = {}

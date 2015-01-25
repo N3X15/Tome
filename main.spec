@@ -27,4 +27,4 @@ exe = EXE(pyz,
           console=True,
           #icon=os.path.join('icons','squad-bw.ico')
 )
-app = BUNDLE(exe, name='Patcher.app')
+#app = BUNDLE(exe, name='Tome.app')
