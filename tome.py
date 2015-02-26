@@ -25,9 +25,9 @@ tome_cfg = os.path.join(arcinstall_dir,'config.json')
 libphutil_uri = 'git://github.com/facebook/libphutil.git'
 arcanist_uri = 'git://github.com/facebook/arcanist.git'
 
-php_version = '5.6.5'
-winphp_uri = 'http://windows.php.net/downloads/releases/php-5.6.5-Win32-VC11-x86.zip'
-winphp_sha1 = 'cb0d47416d17fffa86f2359ca6366fb7b1f6888e'
+php_version = '5.6.6'
+winphp_uri = 'http://windows.php.net/downloads/releases/php-5.6.6-Win32-VC11-x86.zip'
+winphp_sha1 = '0e93bfee3e843cd9fbd4719576f7fe27b3a428dc'
 winphp_extract = os.path.join(arcinstall_dir, 'php')
 php_bin = 'php'
 
@@ -53,51 +53,6 @@ def CloneOrPull(id, uri, dir):
             cmd(['git', 'pull'], echo=True, show_output=True, critical=True)
     with os_utils.Chdir(dir):            
         log.info('{} is now at commit {}.'.format(id, Git.GetCommit()))
-            
-
-class WindowsEnv:
-    """Utility class to get/set windows environment variable"""
-    
-    def __init__(self, scope):
-        from subprocess import check_call
-        log.info('Python version: 0x%0.8X' % sys.hexversion)
-        if sys.hexversion > 0x03000000:
-            import winreg
-        else:
-            import _winreg as winreg
-        self.winreg=winreg
-        
-        assert scope in ('user', 'system')
-        self.scope = scope
-        if scope == 'user':
-            self.root = winreg.HKEY_CURRENT_USER
-            self.subkey = 'Environment'
-        else:
-            self.root = winreg.HKEY_LOCAL_MACHINE
-            self.subkey = r'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
-            
-    def get(self, name, default=None):
-        with self.winreg.OpenKey(self.root, self.subkey, 0, self.winreg.KEY_READ) as key:
-            try:
-                value, _ = self.winreg.QueryValueEx(key, name)
-            except WindowsError:
-                value = default
-            return value
-    
-    def set(self, name, value):
-        # Note: for 'system' scope, you must run this as Administrator
-        with self.winreg.OpenKey(self.root, self.subkey, 0, self.winreg.KEY_ALL_ACCESS) as key:
-            self.winreg.SetValueEx(key, name, 0, self.winreg.REG_EXPAND_SZ, value)
-            
-        import win32api, win32con; assert win32api.SendMessage(win32con.HWND_BROADCAST, win32con.WM_SETTINGCHANGE, 0, 'Environment')
-        
-        """
-        # For some strange reason, calling SendMessage from the current process
-        # doesn't propagate environment changes at all.
-        # TODO: handle CalledProcessError (for assert)
-        subprocess.check_call('''\
-"%s" -c "import win32api, win32con; assert win32api.SendMessage(win32con.HWND_BROADCAST, win32con.WM_SETTINGCHANGE, 0, 'Environment')"''' % sys.executable)
-        """
         
 def CheckInstall():
     packages = []
