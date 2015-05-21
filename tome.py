@@ -1,6 +1,7 @@
 '''
 This is intended to be compiled with pyinstaller.
 '''
+import platform
 
 TOME_VERSION='0.1.1'
 
@@ -25,16 +26,16 @@ tome_cfg = os.path.join(arcinstall_dir,'config.json')
 libphutil_uri = 'git://github.com/facebook/libphutil.git'
 arcanist_uri = 'git://github.com/facebook/arcanist.git'
 
-php_version = '5.6.6'
-winphp_uri = 'http://windows.php.net/downloads/releases/php-5.6.6-Win32-VC11-x86.zip'
-winphp_sha1 = '0e93bfee3e843cd9fbd4719576f7fe27b3a428dc'
+php_version = '5.6.9'
+winphp_uri = 'http://windows.php.net/downloads/releases/php-5.6.9-Win32-VC11-x86.zip'
+winphp_sha1 = 'f78e0fbb7ec2afb9a52b40dd9e2a1b85ac4724a0'
 winphp_extract = os.path.join(arcinstall_dir, 'php')
 php_bin = 'php'
 
 DISTRO = None
 ENV_TYPE = None
 
-packagedefs = {
+package_defs = {
     'ubuntu':{
         'git': ['git-core'],
         'php': ['php5-cli', 'php5-curl']
@@ -51,9 +52,9 @@ def CloneOrPull(id, uri, dir):
     else:
         with os_utils.Chdir(dir):
             cmd(['git', 'pull'], echo=True, show_output=True, critical=True)
-    with os_utils.Chdir(dir):            
+    with os_utils.Chdir(dir):
         log.info('{} is now at commit {}.'.format(id, Git.GetCommit()))
-        
+
 def CheckInstall():
     packages = []
     path = []
@@ -66,7 +67,7 @@ def CheckInstall():
                 packages += package_defs[DISTRO]['git']
         else:
             log.info('Git is present in PATH.')
-            
+
     with log.info('Checking for PHP...'):
         if not os_utils.which('php'):
             if sys.platform == 'win32':
@@ -76,28 +77,28 @@ def CheckInstall():
                 packages += package_defs[DISTRO]['php']
         else:
             log.info('PHP is present in PATH.')
-                
+
     if len(packages) > 0:
         os_utils.InstallDpkgPackages(packages)
-        
+
     with log.info('Checking arcanist installation...'):
         if not os.path.isdir(arcinstall_dir):
             log.info('mkdir ' + arcinstall_dir)
-        
+
         CloneOrPull('libphutil', libphutil_uri, libphutil_dir)
         need_arcanist_path = not os.path.isdir(arcanist_dir)
         CloneOrPull('arcanist', arcanist_uri, arcanist_dir)
-        
+
         if not os_utils.which('php'):
             path += [arcanist_bin_dir]
         else:
             log.info('Arcanist is present in PATH.')
-        
+
     if len(path) == 0:
         return
     if sys.platform == 'win32':
         with log.info('Connecting to Windows to adjust {} PATH...'.format(ENV_TYPE)):
-            env = WindowsEnv(ENV_TYPE)
+            env = os_utils.WindowsEnv(ENV_TYPE)
             oldPath = env.get('PATH', '').split(os.pathsep)
             newPath = path
             for pathSeg in oldPath:
@@ -108,7 +109,7 @@ def CheckInstall():
                     log.warning('Path segment "{}" does not exist!  Recommend removal.'.format(pathSeg))
                     # continue
                 newPath += [pathSeg.strip()]
-                    
+
             fixed_pathstr = os.pathsep.join(newPath)
             log.info('Updating {} %PATH% to: {}'.format(ENV_TYPE, fixed_pathstr))
             env.set('PATH',fixed_pathstr)
@@ -117,7 +118,7 @@ def CheckInstall():
             for pathc in path:
                 with log.info('Adding {} to PATH (via ~/.bashrc)...'.format(pathc)):
                     f.write('\nexport PATH="{0}:$PATH"'.format(pathc))
-        
+
 def WindowsInstallPHP():
     import zipfile, hashlib
     phpzip = 'php-{}.zip'.format(php_version)
@@ -147,15 +148,15 @@ def WindowsInstallPHP():
                             line = 'extension_dir = "{}"'.format(os.path.join(winphp_extract, 'ext'))
                             outfile.write(line + '\n')
                             log.info('Set ' + line)
-                            
-                        orig_comment = comment = line.startswith(';') 
+
+                        orig_comment = comment = line.startswith(';')
                         if comment:
                             line = line[1:]
-                            
+
                             if 'php_curl.dll' in line:
                                 comment = False
-                                
-                        
+
+
                         if orig_comment and not comment:
                             log.info('Uncommented ' + line)
                         elif not orig_comment and comment:
@@ -164,38 +165,38 @@ def WindowsInstallPHP():
                             line = ';' + line
                         outfile.write(line + '\n')
         log.info('Finished writing {}'.format(phpini))
-    
-            
+
+
 if __name__ == '__main__':
     argp = argparse.ArgumentParser(prog='tome', description='Installer for Arcanist.', version=TOME_VERSION)
     command = argp.add_subparsers(help='The command you wish to execute', dest='MODE')
-    
+
     _install = command.add_parser('install', help='Install or update Arcanist.')
     _install.add_argument('--arcbase-dir', type=str, default=arcinstall_dir, help='Directory to install Arcanist, PHP, and phutil.')
     _install.add_argument('--user', action='store_true', default=False, help='Modify Windows user %PATH% (rather than system).')
-    
+
     _setup = command.add_parser('setup-project', help='Set up working directory for phabricator')
     _setup.add_argument('phab_uri', type=str, help='URL of Phabricator')
-    
+
     # _diff = command.add_parser('diff', help='Run arc diff')
-    
+
     args = argp.parse_args()
-    
+
     if sys.platform == 'linux':
         DISTRO, _, _ = platform.linux_distribution()
         DISTRO = DISTRO.lower()
         log.info('Distro is '+DISTRO)
-        
-    
+
+
     if sys.platform == 'win32':
-        ENV_TYPE='user' 
+        ENV_TYPE='user'
         if not args.user:
             from win32com.shell import shell
             if not shell.IsUserAnAdmin():
                 log.error('Please run tome as administrator to modify system %PATH%.  If you only wish to modify your user\'s %PATH%, please add --user to the command line.')
                 sys.exit(1)
             ENV_TYPE='system'
-        
+
     if args.MODE == 'install':
         if args.arcbase_dir is not None:
             arcinstall_dir = os.path.realpath(args.arcbase_dir)
@@ -203,7 +204,7 @@ if __name__ == '__main__':
         if ENV_TYPE is not None:
             log.info('Will modify {} environment variables.'.format(ENV_TYPE))
         CheckInstall()
-        
+
     if args.MODE == 'setup-project':
         import json
         arc_config = {}
