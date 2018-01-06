@@ -1,9 +1,6 @@
 # -*- mode: python -*-
-script_dir = os.path.dirname(os.path.realpath(__file__))
-sys.path.append(os.path.join(script_dir, 'lib', 'buildtools'))
+import sys
 a = Analysis(['tome.py'],
-             pathex=['lib/buildtools'],
-             hiddenimports=['buildtools'],
              hookspath=None)
 #files = os.listdir('icons')
 #for file in files:

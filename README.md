@@ -8,6 +8,6 @@ Tome is a wrapper around arcanist that also features a semi-automated installer 
 
 # Compiling
 
-Tome requires Python 2.7 and pyinstaller (which itself requires pywin32).
-
-After those two dependencies are installed, simply run ```build-win.cmd``` to create tome.exe in the dist directory.
+1. Install Python 3.6 with pip
+2. `pip install -r requirements.txt`
+3. Run `build-win.cmd` to compile.  Install UPX for a smaller installer and more false positives from antivirus.

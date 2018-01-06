@@ -245,25 +245,25 @@ if __name__ == '__main__':
         DISTRO = DISTRO.lower()
         log.info('Distro is ' + DISTRO)
 
-    release_info = (None, None, None)
-    if sys.platform == 'win32':
-        release_info = detect_winphp_version()
-        ENV_TYPE = 'user'
-        if not args.user:
-            from win32com.shell import shell
-            if not shell.IsUserAnAdmin():
-                log.error('Please run tome as administrator to modify system %PATH%.  If you only wish to modify your user\'s %PATH%, please add --user to the command line.')
-                sys.exit(1)
-            ENV_TYPE = 'system'
-    else:
-        release_info = detect_php_version()
-
-    with log.info('Latest version of PHP for this platform:'):
-        log.info('Version.: %s', release_info[0])
-        log.info('URL.....: %s', release_info[1])
-        log.info('SHA256..: %s', release_info[2])
-
     if args.MODE == 'install':
+        release_info = (None, None, None)
+        if sys.platform == 'win32':
+            release_info = detect_winphp_version()
+            ENV_TYPE = 'user'
+            if not args.user:
+                from win32com.shell import shell
+                if not shell.IsUserAnAdmin():
+                    log.error('Please run tome as administrator to modify system %PATH%.  If you only wish to modify your user\'s %PATH%, please add --user to the command line.')
+                    sys.exit(1)
+                ENV_TYPE = 'system'
+        else:
+            release_info = detect_php_version()
+
+        with log.info('Latest version of PHP for this platform:'):
+            log.info('Version.: %s', release_info[0])
+            log.info('URL.....: %s', release_info[1])
+            log.info('SHA256..: %s', release_info[2])
+            
         if args.arcbase_dir is not None:
             arcinstall_dir = os.path.realpath(args.arcbase_dir)
         log.info('Installing to ' + arcinstall_dir)
@@ -271,10 +271,12 @@ if __name__ == '__main__':
             log.info('Will modify {} environment variables.'.format(ENV_TYPE))
         CheckInstall(release_info)
 
-    if args.MODE == 'setup-project':
+    elif args.MODE == 'setup-project':
         import json
         arc_config = {}
         arc_config['phabricator.uri'] = args.phab_uri
         with open('.arcconfig', 'w') as f:
             json.dump(arc_config, f, sort_keys=True, indent=4, separators=(',', ': '))
         log.info('Created .arcconfig.')
+    else:
+        argp.print_usage()
