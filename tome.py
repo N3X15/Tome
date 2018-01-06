@@ -1,19 +1,21 @@
 '''
 This is intended to be compiled with pyinstaller.
 '''
+import argparse
+import os
 import platform
-
-TOME_VERSION='0.1.1'
-
-import os, sys, argparse, subprocess
-
-script_dir = os.path.dirname(os.path.realpath(__file__))
-sys.path.append(os.path.join(script_dir, 'lib', 'buildtools'))
-
-from buildtools import cmd, log, http
-from buildtools import os_utils
-from buildtools.wrapper import Git
+import re
+import subprocess
+import sys
+from buildtools import cmd, cmd_output, http, log, os_utils
 from buildtools.bt_logging import IndentLogger
+from buildtools.wrapper import Git
+
+import requests
+from lxml import etree, html
+from semantic_version import Version
+
+TOME_VERSION = '0.2.0'
 
 home_dir = os.path.expanduser('~')
 
@@ -21,14 +23,56 @@ arcinstall_dir = os.path.join(home_dir, '.arcanist')
 libphutil_dir = os.path.join(arcinstall_dir, 'libphutil')
 arcanist_dir = os.path.join(arcinstall_dir, 'arcanist')
 arcanist_bin_dir = os.path.join(arcanist_dir, 'bin')
-tome_cfg = os.path.join(arcinstall_dir,'config.json')
+tome_cfg = os.path.join(arcinstall_dir, 'config.json')
 
 libphutil_uri = 'git://github.com/facebook/libphutil.git'
 arcanist_uri = 'git://github.com/facebook/arcanist.git'
 
-php_version = '5.6.9'
-winphp_uri = 'http://windows.php.net/downloads/releases/php-5.6.9-Win32-VC11-x86.zip'
-winphp_sha1 = 'f78e0fbb7ec2afb9a52b40dd9e2a1b85ac4724a0'
+REG_WINPKG_IDENTIFIER = re.compile(r'php-(\d+).(\d+)-ts-VC15-x64')
+# /downloads/releases/php-7.2.1-Win32-VC15-x64.zip
+REG_GET_WINPHP_VERSION = re.compile(r'/downloads/releases/php\-(\d+\.\d+\.\d+)\-Win32\-VC15\-x64\.zip')
+REG_GET_PHP_VERSION = re.compile(r'/get/php\-(\d+\.\d+\.\d+)\.tar\.gz/from/a/mirror')
+WINPHP_BASE = 'http://windows.php.net' # TLS times out. :(
+WINPHP_DOWNLOADS = '/download'
+PHP_BASE = 'https://php.net'
+PHP_DOWNLOADS = '/downloads.php'
+
+
+def detect_winphp_version():
+    tree = html.parse(WINPHP_BASE+WINPHP_DOWNLOADS, etree.HTMLParser())
+    for box in tree.xpath('//div[@class="innerbox"]'):
+        # Check <h4> contents.
+        for li in box.findall('./ul/li'):
+            #log.info(li)
+            a = li.find('a')
+            #log.info(a.text)
+            if a.text.strip() != 'Zip':
+                continue
+            href = a.get('href')
+            log.info(href)
+            m = REG_GET_WINPHP_VERSION.match(href)
+            if m is not None:
+                download_uri = WINPHP_BASE + href
+                # /downloads/releases/php-7.2.1-nts-Win32-VC15-x64.zip
+                sha256 = li.find('./span[@class="md5sum"]').text.split(':')[-1].strip()
+                return Version(m.group(1)), download_uri, sha256
+    return None
+
+
+def detect_php_version():
+    tree = html.parse(WINPHP_DOWNLOADS, etree.HTMLParser())
+    for versionblock in tree.xpath('//div[@class="content-box"]/ul/li'):
+        # First <a> is the download link.
+        a = versionblock.find('a')
+        href = a.get('href')
+        m = REG_GET_PHP_VERSION.match(href)
+        version = Version(m.group(1))
+        download_uri = PHP_BASE + href
+        sha256 = versionblock.find('./span[@class="sha256"]').text.strip()
+        return version, download_uri, sha256
+    return None
+
+
 winphp_extract = os.path.join(arcinstall_dir, 'php')
 php_bin = 'php'
 
@@ -36,15 +80,16 @@ DISTRO = None
 ENV_TYPE = None
 
 package_defs = {
-    'ubuntu':{
+    'ubuntu': {
         'git': ['git-core'],
         'php': ['php5-cli', 'php5-curl']
     },
-    'debian':{
+    'debian': {
         'git': ['git-core'],
         'php': ['php5-cli', 'php5-curl']
     }
 }
+
 
 def CloneOrPull(id, uri, dir):
     if not os.path.isdir(dir):
@@ -55,7 +100,15 @@ def CloneOrPull(id, uri, dir):
     with os_utils.Chdir(dir):
         log.info('{} is now at commit {}.'.format(id, Git.GetCommit()))
 
-def CheckInstall():
+
+def CheckPHPVersion(release_info):
+    stdout, _ = cmd_output(['php', '--version'])
+    version = stdout.decode('utf-8').split(' ')[1]
+    log.info('PHP version %s detected.', version)
+    return release_info[0] == Version(version) or sys.platform != 'win32'  # Ignore version on non-windows platforms. (Package management!)
+
+
+def CheckInstall(release_info):
     packages = []
     path = []
     with log.info('Checking for Git...'):
@@ -69,9 +122,9 @@ def CheckInstall():
             log.info('Git is present in PATH.')
 
     with log.info('Checking for PHP...'):
-        if not os_utils.which('php'):
+        if not os_utils.which('php') or not CheckPHPVersion(release_info):
             if sys.platform == 'win32':
-                WindowsInstallPHP()
+                WindowsInstallPHP(release_info)
                 path += [winphp_extract]
             else:
                 packages += package_defs[DISTRO]['php']
@@ -86,7 +139,7 @@ def CheckInstall():
             log.info('mkdir ' + arcinstall_dir)
 
         CloneOrPull('libphutil', libphutil_uri, libphutil_dir)
-        need_arcanist_path = not os.path.isdir(arcanist_dir)
+        #need_arcanist_path = not os.path.isdir(arcanist_dir)
         CloneOrPull('arcanist', arcanist_uri, arcanist_dir)
 
         if not os_utils.which('php'):
@@ -112,25 +165,29 @@ def CheckInstall():
 
             fixed_pathstr = os.pathsep.join(newPath)
             log.info('Updating {} %PATH% to: {}'.format(ENV_TYPE, fixed_pathstr))
-            env.set('PATH',fixed_pathstr)
+            env.set('PATH', fixed_pathstr)
     else:
         with open(os.path.expanduser('~/.bashrc'), 'a') as f:
             for pathc in path:
                 with log.info('Adding {} to PATH (via ~/.bashrc)...'.format(pathc)):
                     f.write('\nexport PATH="{0}:$PATH"'.format(pathc))
 
-def WindowsInstallPHP():
-    import zipfile, hashlib
-    phpzip = 'php-{}.zip'.format(php_version)
+
+def WindowsInstallPHP(release_info):
+    import zipfile
+    import hashlib
+    release_version, release_url, release_sha256 = release_info
+    phpzip = 'php-{}.zip'.format(release_version)
     if not os.path.isfile(phpzip):
         with log.info('Downloading PHP...'):
-            http.DownloadFile(winphp_uri, phpzip)
+            http.DownloadFile(release_url, phpzip)
     with log.info('Verifying PHP ZIP against known SHA1...'):
-        real_sha1 = ''
-        with open(phpzip, 'rb') as f:
-            real_sha1 = hashlib.sha1(f.read()).hexdigest()
-        if real_sha1 != winphp_sha1:
-            log.error('SHA1 mismatch! {} != {}'.format(real_sha1, winphp_sha1))
+        real_sha256 = ''
+        if os.path.isfile(phpzip):
+            with open(phpzip, 'rb') as f:
+                real_sha256 = hashlib.sha256(f.read()).hexdigest()
+        if real_sha256 != release_sha256:
+            log.error('SHA256 mismatch! {} != {}'.format(real_sha256, release_sha256))
             sys.exit(1)
         else:
             log.info('Hashes match.')
@@ -155,7 +212,8 @@ def WindowsInstallPHP():
 
                             if 'php_curl.dll' in line:
                                 comment = False
-
+                            if 'php_openssl.dll' in line:
+                                comment = False
 
                         if orig_comment and not comment:
                             log.info('Uncommented ' + line)
@@ -168,7 +226,7 @@ def WindowsInstallPHP():
 
 
 if __name__ == '__main__':
-    argp = argparse.ArgumentParser(prog='tome', description='Installer for Arcanist.', version=TOME_VERSION)
+    argp = argparse.ArgumentParser(prog='tome', description='Installer for Arcanist.')
     command = argp.add_subparsers(help='The command you wish to execute', dest='MODE')
 
     _install = command.add_parser('install', help='Install or update Arcanist.')
@@ -185,25 +243,33 @@ if __name__ == '__main__':
     if sys.platform == 'linux':
         DISTRO, _, _ = platform.linux_distribution()
         DISTRO = DISTRO.lower()
-        log.info('Distro is '+DISTRO)
+        log.info('Distro is ' + DISTRO)
 
-
+    release_info = (None, None, None)
     if sys.platform == 'win32':
-        ENV_TYPE='user'
+        release_info = detect_winphp_version()
+        ENV_TYPE = 'user'
         if not args.user:
             from win32com.shell import shell
             if not shell.IsUserAnAdmin():
                 log.error('Please run tome as administrator to modify system %PATH%.  If you only wish to modify your user\'s %PATH%, please add --user to the command line.')
                 sys.exit(1)
-            ENV_TYPE='system'
+            ENV_TYPE = 'system'
+    else:
+        release_info = detect_php_version()
+
+    with log.info('Latest version of PHP for this platform:'):
+        log.info('Version.: %s', release_info[0])
+        log.info('URL.....: %s', release_info[1])
+        log.info('SHA256..: %s', release_info[2])
 
     if args.MODE == 'install':
         if args.arcbase_dir is not None:
             arcinstall_dir = os.path.realpath(args.arcbase_dir)
-        log.info('Installing to '+arcinstall_dir)
+        log.info('Installing to ' + arcinstall_dir)
         if ENV_TYPE is not None:
             log.info('Will modify {} environment variables.'.format(ENV_TYPE))
-        CheckInstall()
+        CheckInstall(release_info)
 
     if args.MODE == 'setup-project':
         import json
